@@ -1,0 +1,9 @@
+CoVR-R-authors-github/
+__pycache__/
+*.pyc
+.pytest_cache/
+artifacts/
+videos/
+*.npz
+.venv/
+modal_volume_local/
