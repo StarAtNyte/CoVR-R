@@ -16,3 +16,4 @@ Record = baseline_data.Record
 load_records = baseline_data.load_records
 list_videos = baseline_data.list_videos
 compute_recall = baseline_evaluate.compute_recall
+baseline_evaluate = baseline_evaluate  # re-export module for reason.py
