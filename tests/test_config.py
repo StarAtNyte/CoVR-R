@@ -10,6 +10,9 @@ def test_defaults():
     assert c.dual_sim_enabled is False
     assert c.top_k == 50
     assert 0.0 <= c.fusion_alpha <= 1.0
+    assert c.pool_subdir["webvid"] == "WebVid/8M/train"
+    assert c.pool_subdir["ss2"] == "something_something_v2/20bn-something-something-v2"
+    assert CovrxConfig().pool_subdir is not c.pool_subdir  # no shared mutable default
 
 
 def test_yaml_override(tmp_path):

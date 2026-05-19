@@ -1,6 +1,12 @@
-from dataclasses import dataclass, fields
-from typing import Optional
+from dataclasses import dataclass, field, fields
+from typing import Dict, Optional
 import yaml
+
+# Real HF dataset layout (orange-fox/CoVR-R): pool -> subdir under video_dir.
+DEFAULT_POOL_SUBDIR = {
+    "webvid": "WebVid/8M/train",
+    "ss2": "something_something_v2/20bn-something-something-v2",
+}
 
 
 @dataclass
@@ -9,6 +15,8 @@ class CovrxConfig:
     label_path: str = ""
     video_dir: str = "./videos"
     has_labels: bool = False              # True only for self-built dev set
+    pool_subdir: Dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_POOL_SUBDIR))
 
     # reasoning VLM
     vlm_model: str = "Qwen/Qwen3-VL-32B-Instruct"

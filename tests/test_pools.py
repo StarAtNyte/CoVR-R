@@ -49,3 +49,26 @@ def test_video_path_preserves_source_subdir(tmp_path):
     r = load_pool_records(p.as_posix(), "/data/videos")["webvid"][0]
     assert r.video_path == os.path.join("/data/videos", "webvid", "112", "1016223889.mp4")
     assert r.reference_key == "1016223889.mp4"   # gallery key still basename
+
+
+def test_pool_subdir_mapping_real_hf_layout(tmp_path):
+    import json, os
+    from covrx.pools import load_pool_records
+    from covrx.config import DEFAULT_POOL_SUBDIR
+    p = tmp_path / "v.json"
+    p.write_text(json.dumps([
+        {"webvid": [{"id": 0, "video_source": "112/1016223889",
+                     "modification_text": "x"}]},
+        {"ss2": [{"id": 1, "video_source": 74225,
+                  "modification_text": "y"}]},
+    ]))
+    pools = load_pool_records(p.as_posix(), "/cache/covrr", DEFAULT_POOL_SUBDIR)
+    wv = pools["webvid"][0]
+    ss = pools["ss2"][0]
+    assert wv.video_path == os.path.join(
+        "/cache/covrr", "WebVid/8M/train", "112", "1016223889.mp4")
+    assert wv.reference_key == "1016223889.mp4"        # gallery key = basename
+    assert ss.video_path == os.path.join(
+        "/cache/covrr", "something_something_v2/20bn-something-something-v2",
+        "74225.webm")
+    assert ss.reference_key == "74225.webm"

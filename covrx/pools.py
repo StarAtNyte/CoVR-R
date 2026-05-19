@@ -29,16 +29,19 @@ class PoolRecord:
         return bool(self.target_token)
 
 
-def load_pool_records(label_path: str, video_dir: str) -> Dict[str, List[PoolRecord]]:
+def load_pool_records(label_path: str, video_dir: str,
+                      pool_subdir: Dict[str, str] = None) -> Dict[str, List[PoolRecord]]:
     with open(label_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict):
         data = [data]
 
+    pool_subdir = pool_subdir or {}
     pools: Dict[str, List[PoolRecord]] = {}
     for section in data:
         for pool_key, entries in section.items():
             ext = POOL_EXT.get(pool_key, ".mp4")
+            sub = pool_subdir.get(pool_key, pool_key)
             bucket = pools.setdefault(pool_key, [])
             for i, row in enumerate(entries):
                 src = str(row.get("video_source", "")).strip()
@@ -52,7 +55,7 @@ def load_pool_records(label_path: str, video_dir: str) -> Dict[str, List[PoolRec
                     reference_token=ref_token,
                     target_token=tgt_token,
                     edit_instruction=(row.get("modification_text") or "").strip(),
-                    video_path=os.path.join(video_dir, pool_key, f"{src_rel}{ext}"),
+                    video_path=os.path.join(video_dir, sub, f"{src_rel}{ext}"),
                     ext=ext,
                 ))
     return pools

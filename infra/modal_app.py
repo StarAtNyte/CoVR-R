@@ -62,7 +62,8 @@ class Pipeline:
         from covrx._baseline import list_videos
         counts = {}
         for pool in ("webvid", "ss2"):
-            pool_dir = os.path.join(self.cfg.video_dir, pool)
+            pool_dir = os.path.join(self.cfg.video_dir,
+                                    self.cfg.pool_subdir.get(pool, pool))
             if not os.path.isdir(pool_dir):
                 counts[pool] = -1  # pool dir missing → flag, don't crash
                 continue

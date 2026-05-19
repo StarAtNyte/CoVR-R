@@ -3,7 +3,7 @@
 # Verify the real subpaths from that stage's printed tree sample; adjust
 # label_path / video_dir if the HF layout differs.
 label_path: /cache/covrr/val-set_no-labels.json
-video_dir: /cache/covrr/videos
+video_dir: /cache/covrr
 has_labels: false
 encoder: openclip
 vlm_model: Qwen/Qwen3-VL-32B-Instruct

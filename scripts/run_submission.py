@@ -40,11 +40,11 @@ def run(cfg_path: str):
     describer = ReasonedDescriber(make_qwen_generate(proc, cfg.sample_fps),
                                   cfg.n_self_consistency)
 
-    pools = load_pool_records(cfg.label_path, cfg.video_dir)
+    pools = load_pool_records(cfg.label_path, cfg.video_dir, cfg.pool_subdir)
     per_pool = {}
     for pool, recs in pools.items():
         # 1. Build and load gallery ONLY for this pool
-        pool_dir = os.path.join(cfg.video_dir, pool)
+        pool_dir = os.path.join(cfg.video_dir, cfg.pool_subdir.get(pool, pool))
         gpath = pool_gallery_path(cfg.gallery_npz, pool)
         build_gallery(list_videos(pool_dir), enc, gpath,
                       frame_loader=sample_frames, num_frames=cfg.num_frames)
