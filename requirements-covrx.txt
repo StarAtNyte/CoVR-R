@@ -1,5 +1,6 @@
 torch>=2.4.0
 transformers>=4.40.0
+accelerate>=1.10.0
 qwen-vl-utils>=0.0.14
 open_clip_torch>=2.24.0
 av>=16.0.0
