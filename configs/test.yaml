@@ -1,0 +1,13 @@
+label_path: ./test-set_no-labels.json
+video_dir: ./videos
+has_labels: false
+encoder: openclip
+vlm_model: Qwen/Qwen3-VL-32B-Instruct
+vlm_fallback_model: Qwen/Qwen3-VL-8B-Instruct
+n_self_consistency: 3
+rerank_enabled: true
+top_k: 50
+fusion_alpha: 0.6
+gallery_npz: /cache/gallery_test.npz
+artifact_dir: /cache/covrx/val
+submission_path: /cache/covrx/test_submission.json
