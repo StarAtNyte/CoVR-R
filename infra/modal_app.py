@@ -8,12 +8,30 @@ image = (
     .apt_install("ffmpeg")
     .pip_install_from_requirements(os.path.join(ROOT, "requirements-covrx.txt"))
     .add_local_dir(os.path.join(ROOT, "covrx"), "/root/covrx")
+    .add_local_dir(os.path.join(ROOT, "scripts"), "/root/scripts")
+    .add_local_dir(os.path.join(ROOT, "configs"), "/root/configs")
     .add_local_dir(os.path.join(ROOT, "CoVR-R-authors-github"), "/root/CoVR-R-authors-github")
 )
 
 app = modal.App("covrx")
 cache = modal.Volume.from_name("covrx-cache", create_if_missing=True)
 CACHE = "/cache"
+DATA = "/cache/covrr"  # dataset lives in the persistent Volume, not local disk
+
+
+@app.function(image=image, volumes={CACHE: cache}, timeout=60 * 60 * 6)
+def ingest(repo_id: str = "orange-fox/CoVR-R") -> list[str]:
+    """Download the HF dataset straight into the persistent Volume (no GPU)."""
+    from huggingface_hub import snapshot_download
+    os.environ["HF_HOME"] = f"{CACHE}/hf"
+    snapshot_download(repo_id, repo_type="dataset", local_dir=DATA,
+                      max_workers=16)
+    cache.commit()
+    listing = []
+    for root, _, files in os.walk(DATA):
+        for f in sorted(files)[:5]:
+            listing.append(os.path.relpath(os.path.join(root, f), DATA))
+    return listing[:50]  # sample of the tree so we can verify layout/paths
 
 
 @app.cls(gpu="A100-80GB", image=image, volumes={CACHE: cache},
@@ -35,45 +53,50 @@ class Pipeline:
             num_frames=self.cfg.num_frames)
 
     @modal.method()
-    def index_pool(self, pool: str, video_paths: list[str]) -> int:
+    def warm_index(self) -> dict:
+        """List + embed each pool's videos from the Volume, inside the container."""
+        import sys
+        sys.path.insert(0, "/root")
         from covrx.index import build_gallery, pool_gallery_path
         from covrx.frames import sample_frames
-        return build_gallery(video_paths, self.encoder,
-                              pool_gallery_path(self.cfg.gallery_npz, pool),
-                              frame_loader=sample_frames,
-                              num_frames=self.cfg.num_frames)
+        from covrx._baseline import list_videos
+        counts = {}
+        for pool in ("webvid", "ss2"):
+            pool_dir = os.path.join(self.cfg.video_dir, pool)
+            if not os.path.isdir(pool_dir):
+                counts[pool] = -1  # pool dir missing → flag, don't crash
+                continue
+            n = build_gallery(
+                list_videos(pool_dir), self.encoder,
+                pool_gallery_path(self.cfg.gallery_npz, pool),
+                frame_loader=sample_frames, num_frames=self.cfg.num_frames)
+            counts[pool] = n
+        cache.commit()
+        return counts
 
     @modal.method()
-    def reason_describe(self, items: list[dict]) -> list[dict]:
-        """items: [{'video': path, 'edit': str, 'id': int, 'pool': str}]"""
+    def submit(self) -> str:
+        """Full pipeline (gallery resumable + reason + retrieve + rerank) on Volume."""
         import sys
+        sys.path.insert(0, "/root")
         sys.path.insert(0, "/root/CoVR-R-authors-github")
-        from config import Config
-        from model import VideoProcessor
-        from covrx.reason import ReasonedDescriber, make_qwen_generate
-        bcfg = Config(model_name=self.cfg.vlm_model, parallelism="mp")
-        proc = VideoProcessor(bcfg)
-        proc.load_model(0)
-        rd = ReasonedDescriber(make_qwen_generate(proc, self.cfg.sample_fps),
-                               self.cfg.n_self_consistency)
-        out = []
-        for it in items:
-            r = rd.describe(it["video"], it["edit"])
-            out.append({**it, "target_description": r.target_description,
-                        "reasoning": r.reasoning})
-        return out
+        from scripts.run_submission import run
+        run(self.cfg_yaml)
+        cache.commit()
+        return self.cfg.submission_path
 
 
 @app.local_entrypoint()
-def main(stage: str, cfg: str):
-    p = Pipeline(cfg_yaml=cfg)
+def main(stage: str, cfg: str = "configs/val.yaml"):
+    if stage == "download":
+        print("dataset tree sample:")
+        for p in ingest.remote():
+            print(" ", p)
+        return
+    pipe = Pipeline(cfg_yaml=cfg)
     if stage == "index":
-        import sys
-        sys.path.insert(0, os.path.join(ROOT, "covrx"))
-        from covrx.config import load_covrx_config
-        from covrx._baseline import list_videos
-        c = load_covrx_config(cfg)
-        for pool in ("webvid", "ss2"):
-            pool_dir = os.path.join(c.video_dir, pool)
-            n = p.index_pool.remote(pool, list_videos(pool_dir))
-            print(f"indexed {pool}:", n)
+        print("indexed:", pipe.warm_index.remote())
+    elif stage == "submit":
+        print("submission written to Volume:", pipe.submit.remote())
+    else:
+        raise SystemExit(f"unknown stage {stage!r}; use download|index|submit")

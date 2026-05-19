@@ -1,5 +1,9 @@
-label_path: ./test-set_no-labels.json
-video_dir: ./videos
+# Paths point into the persistent Modal Volume (/cache). Dataset is fetched by
+# `modal run infra/modal_app.py --stage download` into /cache/covrr.
+# Verify the real subpaths from that stage's printed tree sample; adjust
+# label_path / video_dir if the HF layout differs.
+label_path: /cache/covrr/test-set_no-labels.json
+video_dir: /cache/covrr/videos
 has_labels: false
 encoder: openclip
 vlm_model: Qwen/Qwen3-VL-32B-Instruct
@@ -8,6 +12,6 @@ n_self_consistency: 3
 rerank_enabled: true
 top_k: 50
 fusion_alpha: 0.6
-gallery_npz: /cache/gallery_test.npz
-artifact_dir: /cache/covrx/val
+gallery_npz: /cache/covrx/gallery_test.npz
+artifact_dir: /cache/covrx/test
 submission_path: /cache/covrx/test_submission.json
