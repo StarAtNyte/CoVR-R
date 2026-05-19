@@ -1,0 +1,11 @@
+label_path: ./artifacts/covrx/devset.json
+video_dir: ./videos_dev
+has_labels: true
+encoder: dummy            # fast wiring check; switch to openclip on GPU
+vlm_model: Qwen/Qwen3-VL-8B-Instruct
+n_self_consistency: 1
+rerank_enabled: false
+top_k: 50
+gallery_npz: ./artifacts/covrx/dev_gallery.npz
+artifact_dir: ./artifacts/covrx/dev
+submission_path: ./artifacts/covrx/dev_submission.json
