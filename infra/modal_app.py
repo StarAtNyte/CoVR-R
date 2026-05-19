@@ -82,7 +82,7 @@ class Pipeline:
         sys.path.insert(0, "/root")
         sys.path.insert(0, "/root/CoVR-R-authors-github")
         from scripts.run_submission import run
-        run(self.cfg_yaml)
+        run(self.cfg_yaml, commit_fn=cache.commit)
         cache.commit()
         return self.cfg.submission_path
 

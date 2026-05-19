@@ -1,4 +1,9 @@
-"""Full GPU pipeline → submission JSON. Run via Modal for val/test."""
+"""Full GPU pipeline → submission JSON. Run via Modal for val/test.
+
+Resumable: per-record results are appended to a JSONL checkpoint on the Volume.
+Modal can preempt the worker at any time; on restart we skip already-done
+records instead of recomputing the whole (~2600-query) job from scratch.
+"""
 import json
 import os
 import sys
@@ -13,6 +18,33 @@ from covrx.retrieve import rank_pool, build_submission
 from covrx.rerank import rerank_topk
 from covrx._baseline import list_videos
 
+CHECKPOINT_EVERY = 20
+
+
+def progress_path(artifact_dir: str) -> str:
+    return os.path.join(artifact_dir, "progress.jsonl")
+
+
+def load_progress(path: str) -> dict:
+    """Return {(pool, id): ranking} from an existing checkpoint (if any)."""
+    done = {}
+    if not os.path.exists(path):
+        return done
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            done[(rec["pool"], rec["id"])] = rec["ranking"]
+    return done
+
+
+def append_progress(fh, pool: str, rid: int, ranking: list) -> None:
+    fh.write(json.dumps({"pool": pool, "id": rid, "ranking": ranking}) + "\n")
+    fh.flush()
+    os.fsync(fh.fileno())
+
 
 def assemble_submission(per_pool, out_path, top_k):
     sub = build_submission(per_pool, top_k=top_k)
@@ -22,12 +54,13 @@ def assemble_submission(per_pool, out_path, top_k):
     return sub
 
 
-def run(cfg_path: str):
+def run(cfg_path: str, commit_fn=None):
     cfg = load_covrx_config(cfg_path)
+    commit = commit_fn or (lambda: None)
     enc = get_encoder(cfg.encoder, model=cfg.encoder_model,
                       pretrained=cfg.encoder_pretrained, num_frames=cfg.num_frames)
 
-    # 2. reasoning backend (Qwen3-VL via baseline VideoProcessor) — created once
+    # reasoning backend (Qwen3-VL via baseline VideoProcessor) — created once
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
                                     "CoVR-R-authors-github"))
     from config import Config
@@ -40,34 +73,56 @@ def run(cfg_path: str):
     describer = ReasonedDescriber(make_qwen_generate(proc, cfg.sample_fps),
                                   cfg.n_self_consistency)
 
+    os.makedirs(cfg.artifact_dir, exist_ok=True)
+    ckpt = progress_path(cfg.artifact_dir)
+    done = load_progress(ckpt)
+    print(f"resuming: {len(done)} records already checkpointed")
+
     pools = load_pool_records(cfg.label_path, cfg.video_dir, cfg.pool_subdir)
     per_pool = {}
-    for pool, recs in pools.items():
-        # 1. Build and load gallery ONLY for this pool
-        pool_dir = os.path.join(cfg.video_dir, cfg.pool_subdir.get(pool, pool))
-        gpath = pool_gallery_path(cfg.gallery_npz, pool)
-        build_gallery(list_videos(pool_dir), enc, gpath,
-                      frame_loader=sample_frames, num_frames=cfg.num_frames)
-        gallery = dict(np.load(gpath))
-        key_to_path = {os.path.basename(p): p for p in list_videos(pool_dir)}
+    fh = open(ckpt, "a", encoding="utf-8")
+    try:
+        new_since_commit = 0
+        for pool, recs in pools.items():
+            pool_dir = os.path.join(cfg.video_dir, cfg.pool_subdir.get(pool, pool))
+            gpath = pool_gallery_path(cfg.gallery_npz, pool)
+            build_gallery(list_videos(pool_dir), enc, gpath,
+                          frame_loader=sample_frames, num_frames=cfg.num_frames)
+            commit()
+            gallery = dict(np.load(gpath))
+            key_to_path = {os.path.basename(p): p for p in list_videos(pool_dir)}
+            scorer = (make_qwen_scorer(proc, cfg.sample_fps, key_to_path)
+                      if cfg.rerank_enabled else None)
 
-        scorer = (make_qwen_scorer(proc, cfg.sample_fps, key_to_path)
-                  if cfg.rerank_enabled else None)
+            items = []
+            for r in recs:
+                cached = done.get((pool, r.index))
+                if cached is not None:
+                    items.append((r, cached))
+                    continue
+                desc = describer.describe(
+                    r.video_path, r.edit_instruction).target_description
+                q = enc.encode_text(desc)
+                ranked = rank_pool(q, r, gallery)
+                if scorer is not None:
+                    keys = sorted(gallery)
+                    mat = np.stack([gallery[k] for k in keys])
+                    sims = {k: float(s) for k, s in zip(keys, mat @ q)}
+                    ranked = rerank_topk(desc, ranked, sims, scorer,
+                                         cfg.top_k, cfg.fusion_alpha)
+                append_progress(fh, pool, r.index, ranked[:cfg.top_k])
+                items.append((r, ranked))
+                new_since_commit += 1
+                if new_since_commit >= CHECKPOINT_EVERY:
+                    commit()
+                    new_since_commit = 0
+            per_pool[pool] = items
+    finally:
+        fh.close()
+    commit()
 
-        items = []
-        for r in recs:
-            desc = describer.describe(r.video_path, r.edit_instruction).target_description
-            q = enc.encode_text(desc)
-            ranked = rank_pool(q, r, gallery)
-            if scorer is not None:
-                keys = sorted(gallery)
-                mat = np.stack([gallery[k] for k in keys])
-                sims = {k: float(s) for k, s in zip(keys, mat @ q)}
-                ranked = rerank_topk(desc, ranked, sims, scorer,
-                                     cfg.top_k, cfg.fusion_alpha)
-            items.append((r, ranked))
-        per_pool[pool] = items
     assemble_submission(per_pool, cfg.submission_path, cfg.top_k)
+    commit()
     print("wrote", cfg.submission_path)
 
 
