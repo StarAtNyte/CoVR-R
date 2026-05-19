@@ -35,10 +35,11 @@ class Pipeline:
             num_frames=self.cfg.num_frames)
 
     @modal.method()
-    def index_pool(self, video_paths: list[str]) -> int:
-        from covrx.index import build_gallery
+    def index_pool(self, pool: str, video_paths: list[str]) -> int:
+        from covrx.index import build_gallery, pool_gallery_path
         from covrx.frames import sample_frames
-        return build_gallery(video_paths, self.encoder, self.cfg.gallery_npz,
+        return build_gallery(video_paths, self.encoder,
+                              pool_gallery_path(self.cfg.gallery_npz, pool),
                               frame_loader=sample_frames,
                               num_frames=self.cfg.num_frames)
 
@@ -72,4 +73,7 @@ def main(stage: str, cfg: str):
         from covrx.config import load_covrx_config
         from covrx._baseline import list_videos
         c = load_covrx_config(cfg)
-        print("indexed:", p.index_pool.remote(list_videos(c.video_dir)))
+        for pool in ("webvid", "ss2"):
+            pool_dir = os.path.join(c.video_dir, pool)
+            n = p.index_pool.remote(pool, list_videos(pool_dir))
+            print(f"indexed {pool}:", n)

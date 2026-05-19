@@ -26,3 +26,9 @@ def test_build_and_resume(tmp_path):
     assert n2 == 1   # only c encoded
     store = dict(np.load(str(npz)))
     assert set(store) == {"a.mp4", "b.mp4", "c.mp4"}
+
+
+def test_pool_gallery_path():
+    from covrx.index import pool_gallery_path
+    assert pool_gallery_path("/c/gallery.npz", "webvid") == "/c/gallery.webvid.npz"
+    assert pool_gallery_path("/c/gallery.npz", "ss2") == "/c/gallery.ss2.npz"

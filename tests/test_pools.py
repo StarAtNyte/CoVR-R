@@ -37,3 +37,15 @@ def test_with_labels_devset(tmp_path):
     assert r.has_label is True
     assert r.target_token == "y"
     assert r.target_key == "y.mp4"
+
+
+def test_video_path_preserves_source_subdir(tmp_path):
+    import json, os
+    from covrx.pools import load_pool_records
+    p = tmp_path / "v.json"
+    p.write_text(json.dumps([{"webvid": [
+        {"id": 0, "video_source": "112/1016223889",
+         "modification_text": "x"}]}]))
+    r = load_pool_records(p.as_posix(), "/data/videos")["webvid"][0]
+    assert r.video_path == os.path.join("/data/videos", "webvid", "112", "1016223889.mp4")
+    assert r.reference_key == "1016223889.mp4"   # gallery key still basename

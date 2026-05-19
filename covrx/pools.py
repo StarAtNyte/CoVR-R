@@ -45,13 +45,14 @@ def load_pool_records(label_path: str, video_dir: str) -> Dict[str, List[PoolRec
                 tgt = str(row.get("video_target", "")).strip()
                 ref_token = os.path.basename(src).split(".")[0]
                 tgt_token = os.path.basename(tgt).split(".")[0] if tgt else ""
+                src_rel = os.path.splitext(src)[0]  # "112/1016223889" (strip any ext)
                 bucket.append(PoolRecord(
                     index=int(row.get("id", row.get("index", i))),
                     pool=pool_key,
                     reference_token=ref_token,
                     target_token=tgt_token,
                     edit_instruction=(row.get("modification_text") or "").strip(),
-                    video_path=os.path.join(video_dir, pool_key, f"{ref_token}{ext}"),
+                    video_path=os.path.join(video_dir, pool_key, f"{src_rel}{ext}"),
                     ext=ext,
                 ))
     return pools

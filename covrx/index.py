@@ -31,3 +31,8 @@ def build_gallery(video_paths: List[str], encoder, npz_path: str,
             np.savez_compressed(npz_path, **store)
     np.savez_compressed(npz_path, **store)
     return encoded
+
+
+def pool_gallery_path(base_npz: str, pool: str) -> str:
+    root, ext = os.path.splitext(base_npz)
+    return f"{root}.{pool}{ext or '.npz'}"
