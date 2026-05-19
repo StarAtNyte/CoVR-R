@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 artifacts/
 videos/
+videos_dev/
 *.npz
 .venv/
 modal_volume_local/
