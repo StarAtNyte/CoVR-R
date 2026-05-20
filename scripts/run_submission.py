@@ -1,9 +1,12 @@
 """Full GPU pipeline → submission JSON. Run via Modal for val/test.
 
-Resumable: per-record results are appended to a JSONL checkpoint on the Volume.
-Modal can preempt the worker at any time; on restart we skip already-done
-records instead of recomputing the whole (~2600-query) job from scratch.
+Resumable + shardable:
+- Each worker writes per-record results to a shard JSONL on the Volume.
+- A run can resume mid-shard (skips already-checkpointed records).
+- N workers run in parallel via Modal `.map` (sharded by record index).
+- `merge_shards` + `assemble_from_done` build the final submission JSON.
 """
+import glob
 import json
 import os
 import sys
@@ -18,11 +21,11 @@ from covrx.retrieve import rank_pool, build_submission
 from covrx.rerank import rerank_topk
 from covrx._baseline import list_videos
 
-CHECKPOINT_EVERY = 20
+CHECKPOINT_EVERY = 10
 
 
-def progress_path(artifact_dir: str) -> str:
-    return os.path.join(artifact_dir, "progress.jsonl")
+def shard_path(artifact_dir: str, shard_id: int) -> str:
+    return os.path.join(artifact_dir, f"progress.shard_{shard_id}.jsonl")
 
 
 def load_progress(path: str) -> dict:
@@ -40,6 +43,14 @@ def load_progress(path: str) -> dict:
     return done
 
 
+def merge_shards(artifact_dir: str) -> dict:
+    """Merge every `progress.shard_*.jsonl` into one {(pool,id): ranking} dict."""
+    merged = {}
+    for p in sorted(glob.glob(os.path.join(artifact_dir, "progress.shard_*.jsonl"))):
+        merged.update(load_progress(p))
+    return merged
+
+
 def append_progress(fh, pool: str, rid: int, ranking: list) -> None:
     fh.write(json.dumps({"pool": pool, "id": rid, "ranking": ranking}) + "\n")
     fh.flush()
@@ -54,13 +65,31 @@ def assemble_submission(per_pool, out_path, top_k):
     return sub
 
 
-def run(cfg_path: str, commit_fn=None):
+def assemble_from_done(cfg, done: dict, out_path: str) -> int:
+    """Build per-pool list of (rec, ranking) from a merged done-dict + cfg pools,
+    write submission. Returns number of records included."""
+    pools = load_pool_records(cfg.label_path, cfg.video_dir, cfg.pool_subdir)
+    per_pool = {}
+    n = 0
+    for pool, recs in pools.items():
+        items = []
+        for r in recs:
+            ranking = done.get((pool, r.index))
+            if ranking is not None:
+                items.append((r, ranking))
+                n += 1
+        per_pool[pool] = items
+    assemble_submission(per_pool, out_path, cfg.top_k)
+    return n
+
+
+def run(cfg_path: str, commit_fn=None, shard_id: int = 0, n_shards: int = 1):
+    """Process this shard's slice of records (i % n_shards == shard_id)."""
     cfg = load_covrx_config(cfg_path)
     commit = commit_fn or (lambda: None)
     enc = get_encoder(cfg.encoder, model=cfg.encoder_model,
                       pretrained=cfg.encoder_pretrained, num_frames=cfg.num_frames)
 
-    # reasoning backend (Qwen3-VL via baseline VideoProcessor) — created once
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
                                     "CoVR-R-authors-github"))
     from config import Config
@@ -74,18 +103,18 @@ def run(cfg_path: str, commit_fn=None):
                                   cfg.n_self_consistency)
 
     os.makedirs(cfg.artifact_dir, exist_ok=True)
-    ckpt = progress_path(cfg.artifact_dir)
+    ckpt = shard_path(cfg.artifact_dir, shard_id)
     done = load_progress(ckpt)
-    print(f"resuming: {len(done)} records already checkpointed")
+    print(f"[shard {shard_id}/{n_shards}] resuming: {len(done)} done in this shard")
 
     pools = load_pool_records(cfg.label_path, cfg.video_dir, cfg.pool_subdir)
-    per_pool = {}
     fh = open(ckpt, "a", encoding="utf-8")
+    new_since_commit = 0
     try:
-        new_since_commit = 0
         for pool, recs in pools.items():
             pool_dir = os.path.join(cfg.video_dir, cfg.pool_subdir.get(pool, pool))
             gpath = pool_gallery_path(cfg.gallery_npz, pool)
+            # gallery is shared across shards; build_gallery is idempotent
             build_gallery(list_videos(pool_dir), enc, gpath,
                           frame_loader=sample_frames, num_frames=cfg.num_frames)
             commit()
@@ -93,37 +122,33 @@ def run(cfg_path: str, commit_fn=None):
             key_to_path = {os.path.basename(p): p for p in list_videos(pool_dir)}
             scorer = (make_qwen_scorer(proc, cfg.sample_fps, key_to_path)
                       if cfg.rerank_enabled else None)
+            rk = max(1, min(cfg.rerank_k, cfg.top_k))
 
-            items = []
-            for r in recs:
-                cached = done.get((pool, r.index))
-                if cached is not None:
-                    items.append((r, cached))
+            for i, r in enumerate(recs):
+                if i % n_shards != shard_id:
+                    continue
+                if (pool, r.index) in done:
                     continue
                 desc = describer.describe(
                     r.video_path, r.edit_instruction).target_description
                 q = enc.encode_text(desc)
                 ranked = rank_pool(q, r, gallery)
                 if scorer is not None:
-                    keys = sorted(gallery)
-                    mat = np.stack([gallery[k] for k in keys])
-                    sims = {k: float(s) for k, s in zip(keys, mat @ q)}
+                    head = ranked[:max(rk, cfg.top_k)]
+                    mat = np.stack([gallery[k] for k in head])
+                    sims = {k: float(s) for k, s in zip(head, mat @ q)}
+                    # rerank only top rk; output keeps the full top_k order
                     ranked = rerank_topk(desc, ranked, sims, scorer,
-                                         cfg.top_k, cfg.fusion_alpha)
+                                         rk, cfg.fusion_alpha)
                 append_progress(fh, pool, r.index, ranked[:cfg.top_k])
-                items.append((r, ranked))
                 new_since_commit += 1
                 if new_since_commit >= CHECKPOINT_EVERY:
                     commit()
                     new_since_commit = 0
-            per_pool[pool] = items
     finally:
         fh.close()
     commit()
-
-    assemble_submission(per_pool, cfg.submission_path, cfg.top_k)
-    commit()
-    print("wrote", cfg.submission_path)
+    print(f"[shard {shard_id}/{n_shards}] done")
 
 
 if __name__ == "__main__":

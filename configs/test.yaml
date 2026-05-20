@@ -8,8 +8,9 @@ has_labels: false
 encoder: openclip
 vlm_model: Qwen/Qwen3-VL-32B-Instruct
 vlm_fallback_model: Qwen/Qwen3-VL-8B-Instruct
-n_self_consistency: 3
+n_self_consistency: 1
 rerank_enabled: true
+rerank_k: 10
 top_k: 50
 fusion_alpha: 0.6
 gallery_npz: /cache/covrx/gallery_test.npz

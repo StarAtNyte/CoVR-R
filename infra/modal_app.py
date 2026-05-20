@@ -16,7 +16,7 @@ image = (
 app = modal.App("covrx")
 cache = modal.Volume.from_name("covrx-cache", create_if_missing=True)
 CACHE = "/cache"
-DATA = "/cache/covrr"  # dataset lives in the persistent Volume, not local disk
+DATA = "/cache/covrr"
 
 
 @app.function(image=image, volumes={CACHE: cache}, timeout=60 * 60 * 6)
@@ -31,13 +31,16 @@ def ingest(repo_id: str = "orange-fox/CoVR-R") -> list[str]:
     for root, _, files in os.walk(DATA):
         for f in sorted(files)[:5]:
             listing.append(os.path.relpath(os.path.join(root, f), DATA))
-    return listing[:50]  # sample of the tree so we can verify layout/paths
+    return listing[:50]
 
 
+# Pipeline parameters: cfg path + (shard_id, n_shards) so one container = one shard.
 @app.cls(gpu="A100-80GB", image=image, volumes={CACHE: cache},
-         timeout=60 * 60 * 6, scaledown_window=300)
+         timeout=60 * 60 * 24, scaledown_window=300)
 class Pipeline:
     cfg_yaml: str = modal.parameter()
+    shard_id: int = modal.parameter(default=0)
+    n_shards: int = modal.parameter(default=1)
 
     @modal.enter()
     def setup(self):
@@ -54,7 +57,6 @@ class Pipeline:
 
     @modal.method()
     def warm_index(self) -> dict:
-        """List + embed each pool's videos from the Volume, inside the container."""
         import sys
         sys.path.insert(0, "/root")
         from covrx.index import build_gallery, pool_gallery_path
@@ -65,7 +67,7 @@ class Pipeline:
             pool_dir = os.path.join(self.cfg.video_dir,
                                     self.cfg.pool_subdir.get(pool, pool))
             if not os.path.isdir(pool_dir):
-                counts[pool] = -1  # pool dir missing → flag, don't crash
+                counts[pool] = -1
                 continue
             n = build_gallery(
                 list_videos(pool_dir), self.encoder,
@@ -76,28 +78,59 @@ class Pipeline:
         return counts
 
     @modal.method()
-    def submit(self) -> str:
-        """Full pipeline (gallery resumable + reason + retrieve + rerank) on Volume."""
+    def process_shard(self) -> str:
         import sys
         sys.path.insert(0, "/root")
         sys.path.insert(0, "/root/CoVR-R-authors-github")
         from scripts.run_submission import run
-        run(self.cfg_yaml, commit_fn=cache.commit)
+        run(self.cfg_yaml, commit_fn=cache.commit,
+            shard_id=self.shard_id, n_shards=self.n_shards)
         cache.commit()
-        return self.cfg.submission_path
+        return f"shard {self.shard_id}/{self.n_shards} done"
+
+
+@app.function(image=image, volumes={CACHE: cache}, timeout=60 * 60 * 2)
+def assemble(cfg_yaml: str) -> dict:
+    """Merge all shard checkpoints on the Volume into the final submission JSON."""
+    import sys
+    sys.path.insert(0, "/root")
+    sys.path.insert(0, "/root/CoVR-R-authors-github")
+    from covrx.config import load_covrx_config
+    from scripts.run_submission import merge_shards, assemble_from_done
+    cfg = load_covrx_config(cfg_yaml)
+    done = merge_shards(cfg.artifact_dir)
+    n = assemble_from_done(cfg, done, cfg.submission_path)
+    cache.commit()
+    return {"records": n, "submission": cfg.submission_path}
 
 
 @app.local_entrypoint()
-def main(stage: str, cfg: str = "configs/val.yaml"):
+def main(stage: str, cfg: str = "configs/val.yaml", shards: int = 10):
     if stage == "download":
         print("dataset tree sample:")
         for p in ingest.remote():
             print(" ", p)
         return
-    pipe = Pipeline(cfg_yaml=cfg)
     if stage == "index":
+        pipe = Pipeline(cfg_yaml=cfg)
         print("indexed:", pipe.warm_index.remote())
-    elif stage == "submit":
-        print("submission written to Volume:", pipe.submit.remote())
-    else:
-        raise SystemExit(f"unknown stage {stage!r}; use download|index|submit")
+        return
+    if stage == "psubmit":
+        # Fan out `shards` parallel containers, each processes its slice.
+        pipes = [Pipeline(cfg_yaml=cfg, shard_id=i, n_shards=shards)
+                 for i in range(shards)]
+        # .map across instances by spawning each and waiting
+        futures = [p.process_shard.spawn() for p in pipes]
+        for f in futures:
+            print(f.get())
+        print("merging shards into submission ...")
+        print(assemble.remote(cfg))
+        return
+    if stage == "assemble":
+        print(assemble.remote(cfg))
+        return
+    if stage == "submit":          # single-container path (legacy / smoke)
+        pipe = Pipeline(cfg_yaml=cfg)
+        print("submission written to Volume:", pipe.process_shard.remote())
+        return
+    raise SystemExit(f"unknown stage {stage!r}; use download|index|psubmit|assemble|submit")

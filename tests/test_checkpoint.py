@@ -1,9 +1,9 @@
 from scripts.run_submission import (
-    load_progress, append_progress, progress_path)
+    load_progress, append_progress, shard_path, merge_shards)
 
 
-def test_progress_path():
-    assert progress_path("/cache/covrx/val").endswith("val/progress.jsonl")
+def test_shard_path():
+    assert shard_path("/cache/covrx/val", 3).endswith("val/progress.shard_3.jsonl")
 
 
 def test_load_missing_returns_empty(tmp_path):
@@ -21,11 +21,16 @@ def test_append_then_load_roundtrip(tmp_path):
     assert len(done) == 2
 
 
-def test_resume_skips_done(tmp_path):
-    p = tmp_path / "progress.jsonl"
-    with open(p, "a", encoding="utf-8") as fh:
-        append_progress(fh, "webvid", 3, ["t1", "t2"])
-    done = load_progress(str(p))
-    # simulate the run() skip check
-    assert done.get(("webvid", 3)) == ["t1", "t2"]
-    assert done.get(("webvid", 99)) is None
+def test_merge_shards_combines_all(tmp_path):
+    # write two shard files
+    for sid, rows in [(0, [("webvid", 0, ["a"]), ("webvid", 2, ["c"])]),
+                      (1, [("webvid", 1, ["b"]), ("ss2", 5, ["z"])])]:
+        with open(shard_path(str(tmp_path), sid), "a", encoding="utf-8") as fh:
+            for pool, rid, ranking in rows:
+                append_progress(fh, pool, rid, ranking)
+    merged = merge_shards(str(tmp_path))
+    assert merged[("webvid", 0)] == ["a"]
+    assert merged[("webvid", 1)] == ["b"]
+    assert merged[("webvid", 2)] == ["c"]
+    assert merged[("ss2", 5)] == ["z"]
+    assert len(merged) == 4

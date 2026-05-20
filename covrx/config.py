@@ -36,6 +36,7 @@ class CovrxConfig:
 
     # retrieval / fusion / rerank
     top_k: int = 50
+    rerank_k: int = 10                    # rerank only top-N (output still top_k)
     fusion_alpha: float = 0.6             # final = a*retrieval + (1-a)*rerank
     dual_sim_enabled: bool = False
     dual_sim_weight: float = 0.3
